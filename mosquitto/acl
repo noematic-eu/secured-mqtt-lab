@@ -1,0 +1,8 @@
+# lab-secured-v3 — ACL Mosquitto.
+# Deny-by-default. Réécrit en place par enroll.py. Ne pas renommer ce fichier
+# (le bind mount Docker suit l'inode).
+
+# ── App : observation et commandes ────────────────────────────────
+user app
+topic read  devices/#
+topic write devices/+/cmd

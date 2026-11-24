@@ -1,0 +1,30 @@
+# lab-secured-v3 — Mosquitto mTLS.
+# Le port hôte est 8884 : le lab v2 occupe déjà 8883.
+# Le device apprend cet hôte et ce port dans la réponse d'enrôlement.
+
+name: m2dfs-secured-v3
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    container_name: m2dfs-secured-v3
+    # L'entrypoint de l'image tente `chown -R /mosquitto`, ce qui échoue sur les
+    # montages en lecture seule et pollue les logs. Mosquitto drop lui-même ses
+    # privilèges vers l'utilisateur `mosquitto` : on l'exécute directement.
+    entrypoint: ["/bin/sh", "-c", "exec /usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf"]
+    command: []
+    ports:
+      - "8884:8883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./acl:/mosquitto/config/acl:ro
+      - ./tls/certs:/mosquitto/config/certs:ro
+    restart: unless-stopped
+    # L'image Alpine n'a pas pgrep. L'entrypoint fait `exec` mosquitto,
+    # donc le processus 1 est le broker. Ceci ne teste pas le handshake TLS.
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

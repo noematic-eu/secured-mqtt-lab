@@ -1,0 +1,10 @@
+# Réseau Wokwi : gateway public par défaut (celui de wokwi.com).
+#
+# Ne pas fixer ici le gateway privé :
+#   [net]
+#   gateway = "ws://localhost:9011"
+# Ce gateway est le seul chemin du ESP32 simulé vers internet. Dès que le
+# processus local (wokwigw) n'est pas lancé — ou que la connexion WebSocket
+# du navigateur tombe (onglet en arrière-plan, Safari non supporté) — le
+# WiFi du simulateur perd tout accès réseau. Le labo ne fait que des
+# connexions sortantes (NTP, enrôlement, MQTT) : le gateway par défaut suffit.

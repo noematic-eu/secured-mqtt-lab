@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Enrôlement — lab-secured-v3</title>
+  <style>
+    body { font: 16px/1.4 ui-sans-serif, system-ui, sans-serif; margin: 2rem; color: #1a1a1a; }
+    h1 { font-size: 1.4rem; }
+    label { display: block; margin: 0.6rem 0; }
+    input[type="text"], input[type="number"] { font: inherit; padding: 0.3rem 0.4rem; }
+    #token { font-family: ui-monospace, monospace; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+    th, td { border-bottom: 1px solid #ccc; text-align: left; padding: 0.45rem 0.3rem; vertical-align: top; }
+    code { font-family: ui-monospace, monospace; font-size: 0.82rem; word-break: break-all; }
+    button { font: inherit; margin-right: 0.4rem; }
+    .err { color: #8a1f1f; }
+  </style>
+</head>
+<body>
+  <h1>Demandes d'enrôlement</h1>
+  <p>Comparez l'empreinte avec celle du moniteur série. Le nom est l'étiquette. La température remonte du device. La commande LED part d'ici.</p>
+  <label>Jeton admin
+    <input id="token" type="text" name="m2dfs-enroll-token" size="44" spellcheck="false"
+           autocomplete="off" autocorrect="off" autocapitalize="off" readonly>
+  </label>
+  <label>Durée du certificat (heures)
+    <input id="hours" type="number" min="1" max="48" value="8">
+  </label>
+  <button id="login" type="button">Connexion</button>
+  <button id="refresh" type="button">Actualiser</button>
+  <p id="msg" class="err"></p>
+  <p id="live"></p>
+  <table>
+    <thead>
+      <tr>
+        <th>Nom</th>
+        <th>Empreinte</th>
+        <th>État</th>
+        <th>Expiration</th>
+        <th>Température<br><small>device → système</small></th>
+        <th>LED<br><small>système → device</small></th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <script>
+    const tokenInput = document.getElementById("token");
+    const msg = document.getElementById("msg");
+    const rows = document.getElementById("rows");
+    const STORAGE = "m2dfs-admin-token";
+    // Le navigateur remplit ou vide un champ mot de passe tout seul.
+    // Le jeton utilisé est celui validé par Connexion, pas le contenu courant du champ.
+    let activeToken = sessionStorage.getItem(STORAGE) || "";
+    tokenInput.value = activeToken;
+    tokenInput.addEventListener("focus", () => tokenInput.removeAttribute("readonly"));
+
+    function remember(value) {
+      activeToken = value.trim();
+      if (activeToken) sessionStorage.setItem(STORAGE, activeToken);
+      else sessionStorage.removeItem(STORAGE);
+    }
+
+    async function api(path, body) {
+      const response = await fetch(path, {
+        method: body ? "POST" : "GET",
+        headers: {
+          "Authorization": "Bearer " + activeToken,
+          "Content-Type": "application/json"
+        },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      return data;
+    }
+
+    function cell(text) {
+      const td = document.createElement("td");
+      td.textContent = text || "";
+      return td;
+    }
+
+    function action(label, onClick) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.addEventListener("click", onClick);
+      return button;
+    }
+
+    async function refresh() {
+      msg.textContent = "";
+      rows.replaceChildren();
+      try {
+        const data = await api("/v1/requests");
+        for (const item of data.requests) {
+          const tr = document.createElement("tr");
+          const fp = document.createElement("td");
+          const code = document.createElement("code");
+          code.textContent = item.fingerprint;
+          fp.appendChild(code);
+          const actions = document.createElement("td");
+          if (item.status === "pending") {
+            actions.append(
+              action("Approuver", () => act("/v1/approve", { fingerprint: item.fingerprint, hours: Number(document.getElementById("hours").value) })),
+              action("Refuser", () => act("/v1/reject", { fingerprint: item.fingerprint }))
+            );
+          }
+          const temp = document.createElement("td");
+          temp.textContent = "—";
+          if (item.device_id) temp.dataset.temp = item.device_id;
+          const led = document.createElement("td");
+          if (item.status === "approved" && item.device_id) {
+            led.append(
+              action("Allumer", () => sendLed(item.device_id, true)),
+              action("Éteindre", () => sendLed(item.device_id, false))
+            );
+            actions.append(action("Révoquer", () => {
+              if (confirm("Retirer l'ACL de " + item.device_id + " ?")) {
+                act("/v1/revoke", { device_id: item.device_id });
+              }
+            }));
+          }
+          tr.append(cell(item.name), fp, cell(item.status), cell(item.expires_at || ""), temp, led, actions);
+          rows.appendChild(tr);
+        }
+        if (!data.requests.length) {
+          const tr = document.createElement("tr");
+          const td = cell("Aucune demande.");
+          td.colSpan = 7;
+          tr.appendChild(td);
+          rows.appendChild(tr);
+        }
+        startLive();
+      } catch (error) {
+        msg.textContent = error.message;
+      }
+    }
+
+    async function pollLive() {
+      if (!activeToken) return;
+      try {
+        const data = await api("/v1/live");
+        document.getElementById("live").textContent = data.broker || "";
+        for (const [id, row] of Object.entries(data.devices || {})) {
+          const cell = document.querySelector('[data-temp="' + id + '"]');
+          if (cell && row.temp_c !== undefined) {
+            cell.textContent = Number(row.temp_c).toFixed(1) + " °C";
+          }
+        }
+      } catch (error) {
+        document.getElementById("live").textContent = error.message;
+      }
+    }
+
+    async function sendLed(deviceId, on) {
+      try {
+        await api("/v1/cmd", { device_id: deviceId, led: on });
+        msg.textContent = "";
+      } catch (error) {
+        msg.textContent = error.message;
+      }
+    }
+
+    let liveTimer = null;
+    function startLive() {
+      if (liveTimer) return;
+      pollLive();
+      liveTimer = setInterval(pollLive, 2000);
+    }
+
+    async function act(path, body) {
+      try {
+        await api(path, body);
+        await refresh();
+      } catch (error) {
+        msg.textContent = error.message;
+      }
+    }
+
+    document.getElementById("login").addEventListener("click", () => {
+      remember(tokenInput.value);
+      refresh();
+    });
+    document.getElementById("refresh").addEventListener("click", refresh);
+    tokenInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        remember(tokenInput.value);
+        refresh();
+      }
+    });
+    if (activeToken) {
+      refresh();
+      startLive();
+    }
+  </script>
+</body>
+</html>
